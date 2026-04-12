@@ -79,12 +79,9 @@ function dbDeleteByIndex(store, indexName, key) {
 //    Format C (24h with seconds):  DD/MM/YYYY, HH:MM:SS - Sender: msg
 //    Format D (bracket, 12h):      [DD/MM/YYYY, H:MM:SS AM] Sender: msg
 //    Format E (bracket, 24h):      [DD/MM/YYYY, HH:MM] - Sender: msg
-//    Format F (M/D/YY American):   M/D/YY, H:MM AM - Sender: msg
+//    Format F (2-digit year):      DD/MM/YY, H:MM am - Sender: msg
 // ══════════════════════════════════════════════
 
-// Matches all known WhatsApp export timestamp formats
-// Groups: [1]=date  [2]=time-string (may include am/pm)
-// Then the rest:  " - Sender: content"  or  "] Sender: content"
 const MSG_PATTERNS = [
   // [DD/MM/YYYY, H:MM:SS AM/PM] Sender: msg  (bracket iOS)
   /^\[(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm])\]\s([\s\S]+?)(?::\s([\s\S]*))?$/,
@@ -107,28 +104,36 @@ function matchMsgLine(line) {
 }
 
 /**
- * Parse a WhatsApp timestamp robustly.
- * Handles: 12h (am/pm), 24h, with/without seconds, 2-digit or 4-digit year.
+ * Parse a WhatsApp timestamp into a JS timestamp (ms).
+ *
+ * timeStr examples:
+ *   "12:14 am"      → 00:14  (12h midnight)
+ *   "12:14 pm"      → 12:14  (12h noon)
+ *   "3:05 pm"       → 15:05
+ *   "15:36"         → 15:36  (24h)
+ *   "15:36:45"      → 15:36  (24h with seconds, seconds ignored)
+ *   "3:05:22 AM"    → 03:05
  */
 function parseDateTime(dateStr, timeStr) {
   try {
-    // Normalise date: always D, M, Y
-    const dateParts = dateStr.split('/');
-    let d = +dateParts[0], m = +dateParts[1], y = +dateParts[2];
-    if (y < 100) y += 2000; // handle 2-digit year
+    const [dStr, mStr, yStr] = dateStr.split('/');
+    const d = parseInt(dStr, 10);
+    const m = parseInt(mStr, 10);
+    let   y = parseInt(yStr, 10);
+    if (y < 100) y += 2000;
 
-    // Strip seconds if present (HH:MM:SS → HH:MM)
-    const tClean = timeStr.trim().replace(/(:\d{2})(?=\s?[AaPp][Mm]|$)/, (s, sec, off, full) => {
-      // only strip the seconds token, not the first colon
-      return full.replace(/^(\d{1,2}:\d{2}):\d{2}/, '$1');
-    });
+    const t = timeStr.trim();
 
-    // Detect am/pm
-    const ampmMatch = tClean.match(/([AaPp][Mm])$/);
-    const timePart  = tClean.replace(/\s?[AaPp][Mm]$/, '').trim();
-    const [hStr, minStr] = timePart.split(':');
-    let h   = parseInt(hStr,  10);
-    let min = parseInt(minStr, 10);
+    // Detect am/pm suffix
+    const ampmMatch = t.match(/([AaPp][Mm])\s*$/);
+    // Strip am/pm and any surrounding whitespace
+    const timePart = t.replace(/\s*[AaPp][Mm]\s*$/, '').trim();
+
+    // Split on ':' — may give [HH, MM] or [HH, MM, SS]
+    const timeParts = timePart.split(':');
+    let h   = parseInt(timeParts[0], 10);
+    const min = parseInt(timeParts[1], 10);
+    // timeParts[2] = seconds, we intentionally ignore them
 
     if (ampmMatch) {
       const ap = ampmMatch[1].toLowerCase();
@@ -144,8 +149,8 @@ function parseDateTime(dateStr, timeStr) {
 }
 
 function parseChat(text) {
-  // Strip UTF-8 BOM and left-to-right / right-to-left marks that WhatsApp adds
-  const clean = text.replace(/^\uFEFF/, '').replace(/\u200E|\u200F|\u202A|\u202C/g, '');
+  // Strip UTF-8 BOM and invisible Unicode marks WhatsApp injects
+  const clean = text.replace(/^\uFEFF/, '').replace(/[\u200E\u200F\u202A\u202C]/g, '');
   const lines = clean.split(/\r?\n/);
   const msgs  = [];
   let cur = null;
@@ -167,7 +172,6 @@ function parseChat(text) {
         isMedia:   !isSystem && (content || '').trim() === '<Media omitted>'
       };
     } else if (cur) {
-      // Continuation line (multi-line message)
       cur.content += '\n' + line;
     }
   }
