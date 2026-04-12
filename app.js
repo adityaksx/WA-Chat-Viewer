@@ -209,8 +209,14 @@ function renderChatList(filter='') {
           <p><span>Import your first chat</span></p>
         </label>
       </div>`;
+    // FIX: reset input value so same file can be re-selected
     const sf = document.getElementById('sidebarFileInput');
-    if (sf) sf.addEventListener('change', e => { if (e.target.files[0]) openImportModal(e.target.files[0]); });
+    if (sf) sf.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      e.target.value = '';
+      openImportModal(file);
+    });
     return;
   }
 
@@ -383,42 +389,76 @@ function scrollToResult() {
 }
 
 // ══════════════════════════════════════════════
-//  Import flow
+//  Import flow — FIXED
+//  Modal opens ONLY after file is selected.
+//  pendingParsed guaranteed set before Import enables.
 // ══════════════════════════════════════════════
 function openImportModal(file) {
-  pendingFile = file;
+  pendingFile   = file;
   pendingParsed = null;
+
   document.getElementById('senderSelect').innerHTML = '<option value="">Parsing…</option>';
   document.getElementById('importConfirm').disabled = true;
   document.getElementById('filePreview').style.display = 'none';
   document.getElementById('importChatName').value = '';
+
   openModal('importModal');
 
   const reader = new FileReader();
-  reader.onload = e => {
-    const text = e.target.result;
-    pendingParsed = parseChat(text);
-    const participants = extractParticipants(pendingParsed);
-    const sel = document.getElementById('senderSelect');
-    sel.innerHTML = '<option value="">— Select your name —</option>' +
-      participants.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
-    document.getElementById('importChatName').value = file.name.replace(/\.txt$/i,'').replace(/_/g,' ');
-    document.getElementById('previewName').textContent = file.name + '  ';
-    document.getElementById('previewMeta').textContent =
-      `${pendingParsed.length.toLocaleString()} messages · ${participants.length} participants`;
-    document.getElementById('filePreview').style.display = 'block';
-    checkImportReady();
+
+  // FIX: handle read errors explicitly
+  reader.onerror = () => {
+    toast('Could not read file', 'error');
+    document.getElementById('senderSelect').innerHTML = '<option value="">Read error</option>';
   };
+
+  reader.onload = e => {
+    try {
+      const text = e.target.result;
+      pendingParsed = parseChat(text);
+
+      // FIX: guard for empty parse result
+      if (!pendingParsed || pendingParsed.length === 0) {
+        toast('No messages found — make sure this is a WhatsApp export .txt', 'error');
+        document.getElementById('senderSelect').innerHTML = '<option value="">No messages found</option>';
+        return;
+      }
+
+      const participants = extractParticipants(pendingParsed);
+      const nonSys = pendingParsed.filter(m => !m.isSystem).length;
+
+      const sel = document.getElementById('senderSelect');
+      sel.innerHTML = '<option value="">— Select your name —</option>' +
+        participants.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('');
+
+      document.getElementById('importChatName').value = file.name.replace(/\.txt$/i,'').replace(/_/g,' ');
+      document.getElementById('previewName').textContent = file.name + '  ';
+      document.getElementById('previewMeta').textContent =
+        `${nonSys.toLocaleString()} messages · ${participants.length} participants`;
+      document.getElementById('filePreview').style.display = 'block';
+
+      checkImportReady();
+
+    } catch (err) {
+      console.error('Parse error:', err);
+      toast('Parsing error: ' + err.message, 'error');
+      document.getElementById('senderSelect').innerHTML = '<option value="">Parse failed</option>';
+    }
+  };
+
   reader.readAsText(file, 'utf-8');
 }
 
+// FIX: guard pendingParsed length, not just truthiness
 function checkImportReady() {
-  const ready = pendingParsed && document.getElementById('senderSelect').value;
+  const ready = pendingParsed &&
+                pendingParsed.length > 0 &&
+                document.getElementById('senderSelect').value !== '';
   document.getElementById('importConfirm').disabled = !ready;
 }
 
 async function confirmImport() {
-  if (!pendingParsed) return;
+  if (!pendingParsed || pendingParsed.length === 0) return;
   const name = document.getElementById('importChatName').value.trim() || 'Unnamed Chat';
   const myN  = document.getElementById('senderSelect').value;
   const participants = extractParticipants(pendingParsed);
@@ -500,13 +540,20 @@ applyTheme();
 // ══════════════════════════════════════════════
 document.getElementById('themeToggleBtn').addEventListener('click', () => { darkMode = !darkMode; applyTheme(); });
 
-function triggerUpload() {
+// FIX: upload buttons only trigger file picker — modal opens inside openImportModal()
+document.getElementById('uploadBtn').addEventListener('click', () => {
   document.getElementById('fileInput').click();
-}
-document.getElementById('uploadBtn').addEventListener('click', () => { triggerUpload(); openModal('importModal'); });
-document.getElementById('emptyUploadBtn').addEventListener('click', () => { triggerUpload(); openModal('importModal'); });
+});
+document.getElementById('emptyUploadBtn').addEventListener('click', () => {
+  document.getElementById('fileInput').click();
+});
+
+// FIX: file input fires AFTER user picks file → then open modal and parse
 document.getElementById('fileInput').addEventListener('change', e => {
-  if (e.target.files[0]) openImportModal(e.target.files[0]);
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ''; // reset so same file can be re-imported
+  openImportModal(file);
 });
 
 const dropZone = document.getElementById('dropZone');
@@ -520,11 +567,12 @@ dropZone.addEventListener('drop', e => {
   else toast('Please drop a .txt file', 'error');
 });
 
+// FIX: removed redundant openModal() call — openImportModal() handles it
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => {
   e.preventDefault();
   const f = e.dataTransfer.files[0];
-  if (f && f.name.endsWith('.txt')) { openModal('importModal'); openImportModal(f); }
+  if (f && f.name.endsWith('.txt')) openImportModal(f);
 });
 
 document.getElementById('senderSelect').addEventListener('change', checkImportReady);
