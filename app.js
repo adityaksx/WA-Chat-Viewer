@@ -73,41 +73,101 @@ function dbDeleteByIndex(store, indexName, key) {
 
 // ══════════════════════════════════════════════
 //  WhatsApp .txt Parser
+//  Supports all common export formats:
+//    Format A (12h, no brackets):  DD/MM/YYYY, H:MM am/pm - Sender: msg
+//    Format B (24h, no brackets):  DD/MM/YYYY, HH:MM - Sender: msg
+//    Format C (24h with seconds):  DD/MM/YYYY, HH:MM:SS - Sender: msg
+//    Format D (bracket, 12h):      [DD/MM/YYYY, H:MM:SS AM] Sender: msg
+//    Format E (bracket, 24h):      [DD/MM/YYYY, HH:MM] - Sender: msg
+//    Format F (M/D/YY American):   M/D/YY, H:MM AM - Sender: msg
 // ══════════════════════════════════════════════
-const MSG_RE = /^(\d{1,2}\/\d{1,2}\/\d{4}),\s(\d{1,2}:\d{2}\s[ap]m)\s-\s([\s\S]+?)(?::\s([\s\S]*))?$/i;
 
-function parseDateTime(date, time) {
-  const [d,m,y] = date.split('/');
-  let [hm, ampm] = time.split(' ');
-  let [h, min] = hm.split(':').map(Number);
-  if (ampm.toLowerCase() === 'pm' && h !== 12) h += 12;
-  if (ampm.toLowerCase() === 'am' && h === 12) h = 0;
-  return new Date(+y, +m-1, +d, h, min).getTime();
+// Matches all known WhatsApp export timestamp formats
+// Groups: [1]=date  [2]=time-string (may include am/pm)
+// Then the rest:  " - Sender: content"  or  "] Sender: content"
+const MSG_PATTERNS = [
+  // [DD/MM/YYYY, H:MM:SS AM/PM] Sender: msg  (bracket iOS)
+  /^\[(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm])\]\s([\s\S]+?)(?::\s([\s\S]*))?$/,
+  // [DD/MM/YYYY, HH:MM:SS] Sender: msg  (bracket 24h)
+  /^\[(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?)\]\s([\s\S]+?)(?::\s([\s\S]*))?$/,
+  // DD/MM/YYYY, H:MM am/pm - Sender: msg  (no-bracket 12h)
+  /^(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm])\s-\s([\s\S]+?)(?::\s([\s\S]*))?$/,
+  // DD/MM/YYYY, HH:MM:SS - Sender: msg  (no-bracket 24h with seconds)
+  /^(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2}:\d{2})\s-\s([\s\S]+?)(?::\s([\s\S]*))?$/,
+  // DD/MM/YYYY, HH:MM - Sender: msg  (no-bracket 24h, most common in India)
+  /^(\d{1,2}\/\d{1,2}\/\d{2,4}),\s(\d{1,2}:\d{2})\s-\s([\s\S]+?)(?::\s([\s\S]*))?$/,
+];
+
+function matchMsgLine(line) {
+  for (const re of MSG_PATTERNS) {
+    const m = line.match(re);
+    if (m) return m;
+  }
+  return null;
+}
+
+/**
+ * Parse a WhatsApp timestamp robustly.
+ * Handles: 12h (am/pm), 24h, with/without seconds, 2-digit or 4-digit year.
+ */
+function parseDateTime(dateStr, timeStr) {
+  try {
+    // Normalise date: always D, M, Y
+    const dateParts = dateStr.split('/');
+    let d = +dateParts[0], m = +dateParts[1], y = +dateParts[2];
+    if (y < 100) y += 2000; // handle 2-digit year
+
+    // Strip seconds if present (HH:MM:SS → HH:MM)
+    const tClean = timeStr.trim().replace(/(:\d{2})(?=\s?[AaPp][Mm]|$)/, (s, sec, off, full) => {
+      // only strip the seconds token, not the first colon
+      return full.replace(/^(\d{1,2}:\d{2}):\d{2}/, '$1');
+    });
+
+    // Detect am/pm
+    const ampmMatch = tClean.match(/([AaPp][Mm])$/);
+    const timePart  = tClean.replace(/\s?[AaPp][Mm]$/, '').trim();
+    const [hStr, minStr] = timePart.split(':');
+    let h   = parseInt(hStr,  10);
+    let min = parseInt(minStr, 10);
+
+    if (ampmMatch) {
+      const ap = ampmMatch[1].toLowerCase();
+      if (ap === 'pm' && h !== 12) h += 12;
+      if (ap === 'am' && h === 12) h  = 0;
+    }
+    // 24h: h is already correct
+
+    return new Date(y, m - 1, d, h, min).getTime();
+  } catch (_) {
+    return Date.now();
+  }
 }
 
 function parseChat(text) {
-  const lines = text.split(/\r?\n/);
-  const msgs = [];
+  // Strip UTF-8 BOM and left-to-right / right-to-left marks that WhatsApp adds
+  const clean = text.replace(/^\uFEFF/, '').replace(/\u200E|\u200F|\u202A|\u202C/g, '');
+  const lines = clean.split(/\r?\n/);
+  const msgs  = [];
   let cur = null;
 
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    const m = line.match(MSG_RE);
+
+    const m = matchMsgLine(line);
     if (m) {
       if (cur) msgs.push(cur);
-      const [, date, time, senderOrSystem, content] = m;
+      const [, dateStr, timeStr, senderOrSystem, content] = m;
       const isSystem = content === undefined;
       cur = {
-        timestamp: parseDateTime(date, time),
-        dateStr: date,
-        timeStr: time,
-        sender: isSystem ? null : senderOrSystem.trim(),
-        content: isSystem ? senderOrSystem.trim() : content.trim(),
+        timestamp: parseDateTime(dateStr, timeStr),
+        sender:    isSystem ? null : senderOrSystem.trim(),
+        content:   isSystem ? senderOrSystem.trim() : (content || '').trim(),
         isSystem,
-        isMedia: !isSystem && content && content.trim() === '<Media omitted>'
+        isMedia:   !isSystem && (content || '').trim() === '<Media omitted>'
       };
     } else if (cur) {
+      // Continuation line (multi-line message)
       cur.content += '\n' + line;
     }
   }
@@ -185,7 +245,7 @@ function fmtTimeShort(ts) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 // ══════════════════════════════════════════════
@@ -209,7 +269,6 @@ function renderChatList(filter='') {
           <p><span>Import your first chat</span></p>
         </label>
       </div>`;
-    // FIX: reset input value so same file can be re-selected
     const sf = document.getElementById('sidebarFileInput');
     if (sf) sf.addEventListener('change', e => {
       const file = e.target.files[0];
@@ -389,9 +448,7 @@ function scrollToResult() {
 }
 
 // ══════════════════════════════════════════════
-//  Import flow — FIXED
-//  Modal opens ONLY after file is selected.
-//  pendingParsed guaranteed set before Import enables.
+//  Import flow
 // ══════════════════════════════════════════════
 function openImportModal(file) {
   pendingFile   = file;
@@ -406,7 +463,6 @@ function openImportModal(file) {
 
   const reader = new FileReader();
 
-  // FIX: handle read errors explicitly
   reader.onerror = () => {
     toast('Could not read file', 'error');
     document.getElementById('senderSelect').innerHTML = '<option value="">Read error</option>';
@@ -417,7 +473,6 @@ function openImportModal(file) {
       const text = e.target.result;
       pendingParsed = parseChat(text);
 
-      // FIX: guard for empty parse result
       if (!pendingParsed || pendingParsed.length === 0) {
         toast('No messages found — make sure this is a WhatsApp export .txt', 'error');
         document.getElementById('senderSelect').innerHTML = '<option value="">No messages found</option>';
@@ -449,7 +504,6 @@ function openImportModal(file) {
   reader.readAsText(file, 'utf-8');
 }
 
-// FIX: guard pendingParsed length, not just truthiness
 function checkImportReady() {
   const ready = pendingParsed &&
                 pendingParsed.length > 0 &&
@@ -540,7 +594,6 @@ applyTheme();
 // ══════════════════════════════════════════════
 document.getElementById('themeToggleBtn').addEventListener('click', () => { darkMode = !darkMode; applyTheme(); });
 
-// FIX: upload buttons only trigger file picker — modal opens inside openImportModal()
 document.getElementById('uploadBtn').addEventListener('click', () => {
   document.getElementById('fileInput').click();
 });
@@ -548,11 +601,10 @@ document.getElementById('emptyUploadBtn').addEventListener('click', () => {
   document.getElementById('fileInput').click();
 });
 
-// FIX: file input fires AFTER user picks file → then open modal and parse
 document.getElementById('fileInput').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
-  e.target.value = ''; // reset so same file can be re-imported
+  e.target.value = '';
   openImportModal(file);
 });
 
@@ -567,7 +619,6 @@ dropZone.addEventListener('drop', e => {
   else toast('Please drop a .txt file', 'error');
 });
 
-// FIX: removed redundant openModal() call — openImportModal() handles it
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => {
   e.preventDefault();
