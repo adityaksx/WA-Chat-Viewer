@@ -1,67 +1,130 @@
-# WhatsApp Archive
+# WhatsApp Chat Viewer
 
-Turn your WhatsApp `.txt` exports into a beautiful, searchable archive.
+A local web application for importing, viewing, and searching WhatsApp chat exports.
 
-## Two ways to use
-
-### 1. Standalone HTML (Recommended — no install needed)
-Open `whatsapp-archive.html` directly in your browser.
-Uses **IndexedDB** for local persistent storage — no server required.
-
-### 2. Python Flask + SQLite (Server mode)
-```bash
-pip install flask
-python app.py
-# Open http://localhost:5000
-```
-
----
-
-## How to export a WhatsApp chat
-
-1. Open a chat in WhatsApp
-2. Tap More (⋮) → More → Export chat
-3. Choose **Without media**
-4. Share/save the `.txt` file
-
----
+> **Status:** Work in progress — the project is functional, but several features and improvements are planned.
 
 ## Features
 
-| Feature | Details |
-|---------|---------|
-| WhatsApp UI | Authentic dark/light theme, bubbles, timestamps |
-| IndexedDB | Chats persist in browser (standalone version) |
-| SQLite | Server-side storage with Flask backend |
-| Search | Full-text search within any chat |
-| Multi-participant | Group chats with sender names on bubbles |
-| Date separators | Today, Yesterday, or date |
-| Media badges | <Media omitted> shown as media badge |
-| Dark / Light | Matches WhatsApp Web colors |
-| Delete & Rename | Right-click any chat to manage it |
-| Drag & drop | Drag a .txt file anywhere onto the app |
+- Import WhatsApp `.txt` chat exports
+- WhatsApp-style chat interface
+- Dark and light themes
+- Search chats and messages
+- Group chat support
+- Sender identification
+- Message timestamps and date separators
+- Media-omitted message detection
+- Rename and delete imported chats
+- Drag-and-drop chat import
+- Standalone browser mode using IndexedDB
+- Optional Flask + SQLite backend
+- Read-only archive interface
 
----
+The parser supports multiple common WhatsApp export formats, including 12-hour and 24-hour timestamps, bracketed iOS exports, seconds, and two-digit years.
 
-## Flask API Reference
+## Project Structure
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | /api/chats | List all chats |
-| POST | /api/chats | Import (multipart: file, name, my_name) |
-| PATCH | /api/chats/:id | Rename |
-| DELETE | /api/chats/:id | Delete |
-| GET | /api/chats/:id/messages | Messages (q, limit, offset params) |
-| POST | /api/parse-preview | Preview participants without saving |
-
----
-
-## Project layout
-
-```
-whatsapp-archive/
-├── whatsapp-archive.html  <- Standalone app (just open this)
-├── app.py                 <- Flask + SQLite backend
+```text
+whatsapp-chat-viewer/
+├── index.html
+├── style.css
+├── app.js
+├── app.py
+├── requirements.txt
 ├── README.md
-└── wa_archive.db          <- auto-created by Flask on first run
+└── wa_archive.db        # created automatically in server mode
 ```
+
+## Standalone Mode
+
+The frontend can run without a backend and stores imported chats locally using IndexedDB.
+
+Simply open:
+
+```text
+index.html
+```
+
+in a modern browser.
+
+## Flask Server Mode
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Start the server
+
+```bash
+python app.py
+```
+
+### 3. Open the application
+
+```text
+http://localhost:5000
+```
+
+The Flask backend uses SQLite for storing chats and messages.
+
+## Export a WhatsApp Chat
+
+1. Open a chat in WhatsApp.
+2. Select **More → Export chat**.
+3. Choose **Without media**.
+4. Save or share the generated `.txt` file.
+5. Import the file into the application.
+
+
+
+## API
+
+The Flask server currently provides endpoints for:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/chats` | List imported chats |
+| POST | `/api/chats` | Import a chat |
+| PATCH | `/api/chats/:id` | Rename a chat |
+| DELETE | `/api/chats/:id` | Delete a chat |
+| GET | `/api/chats/:id/messages` | Retrieve/search messages |
+| POST | `/api/parse-preview` | Preview an exported chat |
+
+
+
+## Current Limitations
+
+This project is still under development. Some areas that can be improved include:
+
+- Better handling of different WhatsApp export formats
+- Improved media support
+- More reliable date/time parsing
+- Advanced search and filtering
+- Chat statistics and analytics
+- Better mobile responsiveness
+- Performance improvements for very large exports
+- Improved error handling and validation
+- Better separation between frontend and backend
+- Additional testing
+
+## Privacy
+
+The project is designed for local use. Imported conversations are intended to remain on the user's local machine/browser rather than being uploaded to a third-party service.
+
+**Do not upload or publish private WhatsApp exports to a public repository.**
+
+## Technologies
+
+- HTML
+- CSS
+- JavaScript
+- IndexedDB
+- Python
+- Flask
+- SQLite
+
+## License
+
+Add a license before distributing the project publicly.

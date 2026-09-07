@@ -1,3 +1,38 @@
+
+/chats
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Flask / local database
 *.db
-app_ver1.py
-/New folder
+*.sqlite
+*.sqlite3
+
+# Environment variables
+.env
+.env.*
+
+# IDE / editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build / cache
+.cache/
+dist/
+build/

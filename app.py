@@ -55,40 +55,106 @@ def close_db(_):
     if db:
         db.close()
 
-MSG_RE = re.compile(
-    r'^(\d{1,2}/\d{1,2}/\d{4}),\s(\d{1,2}:\d{2}\s[ap]m)\s-\s([\s\S]+?)(?::\s([\s\S]*))?$',
-    re.IGNORECASE
-)
+# ──────────────────────────────────────────────────────────────────────────
+#  WhatsApp parser — supports ALL common export formats:
+#
+#  Format A  (12h no-bracket)  : DD/MM/YYYY, H:MM am/pm - Sender: msg
+#  Format B  (24h no-bracket)  : DD/MM/YYYY, HH:MM - Sender: msg
+#  Format C  (24h with secs)   : DD/MM/YYYY, HH:MM:SS - Sender: msg
+#  Format D  (bracket 12h iOS) : [DD/MM/YYYY, H:MM:SS AM] Sender: msg
+#  Format E  (bracket 24h)     : [DD/MM/YYYY, HH:MM] - Sender: msg
+#  Format F  (2-digit year)    : DD/MM/YY, HH:MM - Sender: msg
+# ──────────────────────────────────────────────────────────────────────────
+
+MSG_PATTERNS = [
+    # bracket 12h (iOS):  [DD/MM/YYYY, H:MM:SS AM] Sender: msg
+    re.compile(
+        r'^\[(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm])\]\s([\s\S]+?)(?::\s([\s\S]*))?$'
+    ),
+    # bracket 24h:  [DD/MM/YYYY, HH:MM:SS] Sender: msg
+    re.compile(
+        r'^\[(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?)\]\s([\s\S]+?)(?::\s([\s\S]*))?$'
+    ),
+    # no-bracket 12h:  DD/MM/YYYY, H:MM am/pm - Sender: msg
+    re.compile(
+        r'^(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2}(?::\d{2})?\s?[AaPp][Mm])\s-\s([\s\S]+?)(?::\s([\s\S]*))?$'
+    ),
+    # no-bracket 24h with seconds:  DD/MM/YYYY, HH:MM:SS - Sender: msg
+    re.compile(
+        r'^(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2}:\d{2})\s-\s([\s\S]+?)(?::\s([\s\S]*))?$'
+    ),
+    # no-bracket 24h (most common India Android):  DD/MM/YYYY, HH:MM - Sender: msg
+    re.compile(
+        r'^(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2})\s-\s([\s\S]+?)(?::\s([\s\S]*))?$'
+    ),
+]
+
+def match_msg_line(line):
+    for pat in MSG_PATTERNS:
+        m = pat.match(line)
+        if m:
+            return m
+    return None
 
 def parse_datetime(date_str, time_str):
-    d, m, y = date_str.split('/')
-    dt_str = f'{d.zfill(2)}/{m.zfill(2)}/{y} {time_str.upper()}'
+    """Parse WhatsApp timestamp robustly: 12h/24h, with/without seconds, 2/4-digit year."""
     try:
-        return int(datetime.strptime(dt_str, '%d/%m/%Y %I:%M %p').timestamp() * 1000)
-    except ValueError:
+        parts = date_str.split('/')
+        d, mo, y = int(parts[0]), int(parts[1]), int(parts[2])
+        if y < 100:
+            y += 2000
+
+        t = time_str.strip()
+        # strip seconds  HH:MM:SS → HH:MM  (keep am/pm if present)
+        t = re.sub(r'(\d{1,2}:\d{2}):\d{2}', r'\1', t)
+
+        ampm_match = re.search(r'([AaPp][Mm])$', t)
+        time_part  = re.sub(r'\s?[AaPp][Mm]$', '', t).strip()
+        h_str, min_str = time_part.split(':')
+        h, mn = int(h_str), int(min_str)
+
+        if ampm_match:
+            ap = ampm_match.group(1).lower()
+            if ap == 'pm' and h != 12:
+                h += 12
+            elif ap == 'am' and h == 12:
+                h = 0
+        # 24h: h is already correct
+
+        dt = datetime(y, mo, d, h, mn)
+        return int(dt.timestamp() * 1000)
+    except Exception:
         return int(datetime.now().timestamp() * 1000)
 
+# Unicode invisible chars WhatsApp adds
+_INVISIBLE = re.compile(r'[\u200e\u200f\u202a\u202c\ufeff]')
+
 def parse_chat(text):
+    # Strip BOM and invisible Unicode marks
+    text = _INVISIBLE.sub('', text)
     msgs, cur = [], None
+
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        m = MSG_RE.match(line)
+
+        m = match_msg_line(line)
         if m:
             if cur:
                 msgs.append(cur)
-            date, time, sender_or_sys, content = m.groups()
+            date_str, time_str, sender_or_sys, content = m.group(1), m.group(2), m.group(3), m.group(4)
             is_sys = content is None
             cur = dict(
-                timestamp=parse_datetime(date, time),
-                sender=None if is_sys else sender_or_sys.strip(),
-                content=sender_or_sys.strip() if is_sys else (content or '').strip(),
-                is_system=is_sys,
-                is_media=not is_sys and (content or '').strip() == '<Media omitted>'
+                timestamp = parse_datetime(date_str, time_str),
+                sender    = None if is_sys else sender_or_sys.strip(),
+                content   = sender_or_sys.strip() if is_sys else (content or '').strip(),
+                is_system = is_sys,
+                is_media  = not is_sys and (content or '').strip() == '<Media omitted>'
             )
         elif cur:
             cur['content'] += '\n' + line
+
     if cur:
         msgs.append(cur)
     return msgs
@@ -99,6 +165,7 @@ def extract_participants(msgs):
         if not m['is_system'] and m['sender']:
             counts[m['sender']] = counts.get(m['sender'], 0) + 1
     return [k for k, _ in sorted(counts.items(), key=lambda x: -x[1])]
+
 
 @app.route('/api/chats', methods=['GET'])
 def list_chats():
@@ -191,15 +258,13 @@ def parse_preview():
         'filename': f.filename
     })
 
-# ── Serve the frontend ─────────────────────────────────────────────────────
+# ── Serve the frontend ───────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
-    # Serve index.html from the same directory as app.py
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), 'index.html')
 
 @app.route('/<path:filename>')
 def static_files(filename):
-    # Serve style.css, app.js, etc. from the same directory
     return send_from_directory(os.path.dirname(os.path.abspath(__file__)), filename)
 
 if __name__ == '__main__':
